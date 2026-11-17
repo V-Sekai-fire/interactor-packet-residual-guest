@@ -65,6 +65,10 @@ Share of packets delivered exactly, and bytes per tick (240 entities, zstd with 
 
 The old layout costs 1652 bytes per tick. Parity packets are XORs of sparse packets and compress poorly (G=8: 421 bytes per tick). Not measured: parity across a slot's ticks, two parities per group (P+Q), groups chosen across datagrams, bursts of loss.
 
+## Pose to packet code
+
+A joint's rotation goes from its 3x3 matrix to the packet's swing_x, swing_z and twist with no quaternion (`tools/pose_codes.py`): the swing is the shortest turn taking +Y to the matrix's Y column, the twist is what is left. Kimodo's decoder already writes parent-local matrices (`kimodo_decode.h`), so a Kimodo pose reaches the packet by this one step. Checked (`tests/pose_codes_check.py`): the contract's worked examples within one code (the 90 degree swing is the tie 16383.5), 3000 random rotations at 96 microradians worst, and real Kimodo frames at 88; swapped swing axes and a flipped twist sign are caught. Against the quaternion route the dataset was built with, 6 of 17,640 real joint rotations differ, by one code. The dataset keeps its original codes.
+
 ## Non-goals
 
 - Lossy coding. No field is quantised, rounded or dropped. The decoder returns the current packet byte for byte.
