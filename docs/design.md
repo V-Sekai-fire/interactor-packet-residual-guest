@@ -25,3 +25,8 @@ A float decoder gives a different last bit on a CPU and a GPU, and both ends mus
 - CONTROL: a planted wrong predictor still decodes and costs more; a flipped residual byte is caught.
 - PARITY (decoder): C++ output equals an independent integer reference equals the GPU output, bit for bit.
 - NUMBER: bits per entity against 42.8, and the rotation escape rate.
+
+## Non-goals
+
+- Lossy coding. No field is quantised, rounded or dropped. The decoder returns the current packet byte for byte.
+- A cut or truncatable packet. There is no droppable fine stage. A packet is whole or it is malformed.
