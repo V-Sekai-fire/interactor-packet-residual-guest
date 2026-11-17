@@ -177,11 +177,12 @@ def decode_slot(pkt, h, want="kernel"):
     return bytes(b)
 
 
-def remember(history, e, raw):
+def remember(history, e, raw, coded):
+    """A verbatim packet restarts the slot's history on both ends; a residual packet extends it. A keyframe is a verbatim packet."""
     v = vals(raw)
     v["_raw"] = raw
     h = history.get(e, [None, None, None])
-    history[e] = [v, h[0], h[1]]
+    history[e] = [v, h[0], h[1]] if coded[MARK_OFF] == MARK else [v, None, None]
 
 
 def run(data, ent, ticks, want):
@@ -204,8 +205,8 @@ def run(data, ent, ticks, want):
                     nz[f] += pkt[i] != 0
             else:
                 verbatim += 1
-            remember(enc_h, e, raw)
-            remember(dec_h, e, back)
+            remember(enc_h, e, raw, pkt)
+            remember(dec_h, e, back, pkt)
             tick += pkt
         wire.append(bytes(tick))
     return wire, bad, verbatim, total, {f: nz[f] / max(1, n_res) for f in FIELDS}

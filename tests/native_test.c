@@ -69,8 +69,8 @@ int main(int argc, char **argv) {
 			} else {
 				differ_back += memcmp(back, raw, PR_SIZE) != 0;
 			}
-			pr_slot_push(&enc[e], raw);
-			pr_slot_push(&dec[e], back);
+			pr_slot_update(&enc[e], pkt, raw);
+			pr_slot_update(&dec[e], pkt, back);
 			++total;
 		}
 	}

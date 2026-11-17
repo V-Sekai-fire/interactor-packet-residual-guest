@@ -40,6 +40,21 @@ void pr_slot_push(pr_slot_t *s, const uint8_t raw[PR_SIZE]) {
 	s->h[0].valid = 1;
 }
 
+void pr_slot_update(pr_slot_t *s, const uint8_t coded[PR_SIZE], const uint8_t raw[PR_SIZE]) {
+	if (coded[PR_MARK_OFF] != PR_MARK) {
+		pr_slot_init(s);
+	}
+	pr_slot_push(s, raw);
+}
+
+int pr_keyframe(const uint8_t raw[PR_SIZE], uint8_t out[PR_SIZE]) {
+	if (raw[PR_MARK_OFF] == PR_MARK) {
+		return -1;
+	}
+	memcpy(out, raw, PR_SIZE);
+	return 0;
+}
+
 static void fields(const xr_grid_entity_packet_t *p, uint64_t v[NF]) {
 	v[GID] = p->gid;
 	v[CO] = p->class_owner;

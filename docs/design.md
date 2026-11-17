@@ -40,6 +40,31 @@ The decoder both ends run must give the same bytes on every host, so it is integ
 - **C++ target, one core**: bit-exact, about 5 us per entity for the same layer, not tuned.
 - **Neural Engine through Core ML** (`tools/ane_spike.py`, 256-256-90 ternary-weight MLP in fp16): the compute plan puts all 7 ops on the Neural Engine, but the engine computes in fp16. Against a float64 reference, CPU only, CPU+GPU and CPU+ANE are off by up to 27, 2 and 9 rotation codes, and the three units agree on 0 to 9% of values. Each unit repeats itself. Timed from native code with no Python (`tools/ane_native.swift`), at 240 entities the calls take 136 us (CPU), 516 us (CPU+GPU) and 223 us (CPU+ANE); at 1000 entities 334, 805 and 328 us. Python added about 15%, so Core ML's own cost per call is the floor. So the Neural Engine cannot be the decoder both ends share; it can run a float teacher or a model that is not part of the byte contract.
 
+## Loss
+
+A residual packet is coded against the earlier packets of its slot, so a lost packet leaves the decoder's history different from the encoder's. Measured with no protection (`tests/loss_sim.c`, 240 slots, 400 ticks, one random seed): after one loss the slot decodes wrongly to the end of the run.
+
+Rules now in both codecs:
+
+- A verbatim packet restarts the slot's history at both ends (`pr_slot_update`). A keyframe is a verbatim packet, so it resynchronises a decoder.
+- The decoder knows which packets did not arrive. A slot whose history it cannot trust is withheld, never guessed: in every run below, wrong = 0.
+- A parity packet is the XOR of the coded packets of G slots in one tick. With one data packet of the group missing and the parity present, the missing packet is rebuilt exactly.
+- Keyframes are staggered: slot e sends one when (tick + e) mod K = 0, so the load is flat.
+
+Share of packets delivered exactly, and bytes per tick (240 entities, zstd with the previous tick as prefix; parity and keyframes included):
+
+| G (group) | K (keyframe) | bytes/tick | exact at 1% loss | exact at 5% loss |
+|---|---|---|---|---|
+| none | none | 1285 | 24.9% | 4.9% |
+| none | 20 | 1446 | 90.3% | 61.4% |
+| none | 5 | 1673 | 97.1% | 86.0% |
+| 8 | none | 1706 | 82.7% | 17.0% |
+| 8 | 20 | 2083 | 99.0% | 84.2% |
+| 16 | 20 | 1925 | 98.3% | 75.4% |
+| 30 | 20 | 1758 | 97.5% | 67.6% |
+
+The old layout costs 1652 bytes per tick. Parity packets are XORs of sparse packets and compress poorly (G=8: 421 bytes per tick). Not measured: parity across a slot's ticks, two parities per group (P+Q), groups chosen across datagrams, bursts of loss.
+
 ## Non-goals
 
 - Lossy coding. No field is quantised, rounded or dropped. The decoder returns the current packet byte for byte.

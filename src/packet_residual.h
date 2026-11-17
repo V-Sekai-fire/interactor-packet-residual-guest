@@ -45,6 +45,12 @@ void pr_slot_init(pr_slot_t *s);
 /* Remember an exact packet (the source packet at the sender, the decoded one at the receiver). */
 void pr_slot_push(pr_slot_t *s, const uint8_t raw[PR_SIZE]);
 
+/* Update a slot after a coded packet, the same call at both ends: a verbatim packet restarts the slot's history (so a keyframe
+ * resynchronises a decoder that lost packets), a residual packet extends it. raw is the exact packet. */
+void pr_slot_update(pr_slot_t *s, const uint8_t coded[PR_SIZE], const uint8_t raw[PR_SIZE]);
+/* A keyframe: the packet verbatim. Returns -1 if the source packet carries the marker byte. */
+int pr_keyframe(const uint8_t raw[PR_SIZE], uint8_t out[PR_SIZE]);
+
 /* Code one packet. Returns 1 for a residual packet, 0 for the packet verbatim, -1 if the source packet carries the
  * marker byte (it cannot be coded). */
 int pr_encode(const pr_slot_t *s, const uint8_t raw[PR_SIZE], uint8_t out[PR_SIZE]);
