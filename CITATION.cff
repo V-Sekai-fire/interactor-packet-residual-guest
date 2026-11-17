@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "interactor-packet-residual-guest"
+abstract: "The 100-byte entity packet coded losslessly as a predicted packet plus a residual fix: zero-filled fixed slots, any predictor, byte-exact decode."
+type: software
+authors:
+  - family-names: "Lee"
+    given-names: "K. S. Ernest (iFire)"
+license: MIT
+repository-code: "https://github.com/V-Sekai-fire/interactor-packet-residual-guest"
