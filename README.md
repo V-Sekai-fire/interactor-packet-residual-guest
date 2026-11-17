@@ -24,6 +24,12 @@ A spike. The guest ELF is the target and is not built yet. What is here is the v
 
 96,000 of 96,000 packets decode byte for byte. Rotation carries nearly all of the cost: 70% of rotation residuals are non-zero. Velocity and acceleration residuals are zero because the data was made with the same rule the predictor uses. One data source, one predictor, and no packet loss.
 
+## Data
+
+The paired dataset is `chibifire/datasource-packet-residual` on Hugging Face: motion-capture poses with the packet's rotation codes, split by whole clip into train, validation and test. It is private, because it is derived from third-party clips and its licence status is not established. Train and score any learned predictor on those splits only; the test split holds the clips behind the numbers above.
+
+Snapshot: `e22b943a8e30c34d637b9bebfe165bf6f0ab3246`.
+
 ## Reproduce
 
 ```
