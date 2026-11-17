@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <vector>
+#include <chrono>
 namespace tl {
 #include "build/ternary_layer_emit.cpp"
 }
@@ -34,7 +35,11 @@ int main(int argc, char **argv) {
 	tl::ComputeVaryingInput vi{};
 	vi.startGroupID = { 0, 0, 0 };
 	vi.endGroupID = { (uint32_t)((N * OUT + 63) / 64), 1, 1 };
-	tl::main_0(&vi, nullptr, &gp);
+	const int reps = argc > 3 ? atoi(argv[3]) : 1;
+	const auto t0 = std::chrono::steady_clock::now();
+	for (int r = 0; r < reps; ++r) tl::main_0(&vi, nullptr, &gp);
+	const auto t1 = std::chrono::steady_clock::now();
+	printf("cpu_us_per_call %.1f\n", std::chrono::duration<double, std::micro>(t1 - t0).count() / reps);
 	f = fopen(argv[2], "wb");
 	fwrite(y.data(), 4, y.size(), f);
 	fclose(f);
