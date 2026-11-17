@@ -54,7 +54,7 @@ class TGDN(nn.Module):
 
 def _tern(l):
     q, s = l.quant()
-    return (q.view(l.o, l.i).numpy().astype(np.int8), np.rint(s[:, :, 0].numpy() * (1 << FX)).astype(np.int64),
+    return (q.view(l.o, l.i).numpy().astype(np.int8), np.rint(s[:, :, 0].detach().numpy() * (1 << FX)).astype(np.int64),
             np.rint(l.b.detach().numpy().astype(np.float64) * (1 << FX)).astype(np.int64))
 
 
