@@ -1,4 +1,7 @@
-# MIT. Copyright (c) 2026-present K. S. Ernest (iFire) Lee
+# SPDX-FileCopyrightText: 2026 K. S. Ernest (iFire) Lee
+#
+# SPDX-License-Identifier: MIT
+
 # Spike for issue #5: the current 100-byte entity packet, coded LOSSLESSLY as predicted + residual fix.
 #   python packet_residual_lossless.py FRAMES.bin [ENTITIES=240] [TICKS=400]
 # FRAMES.bin is ticks x ENTITIES x 100 B (mm_to_packets.py). Every byte of every packet comes back exact: gid,
