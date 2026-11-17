@@ -38,7 +38,7 @@ The decoder both ends run must give the same bytes on every host, so it is integ
 
 - **Metal, tiled integer kernel** (`slang/ternary_layer_tiled.slang`): bit-exact against numpy int64, 0.59 us per entity at 1000 or more entities, 256 x 256 layer.
 - **C++ target, one core**: bit-exact, about 5 us per entity for the same layer, not tuned.
-- **Neural Engine through Core ML** (`tools/ane_spike.py`, 256-256-90 ternary-weight MLP in fp16): the compute plan puts all 7 ops on the Neural Engine, but the engine computes in fp16. Against a float64 reference, CPU only, CPU+GPU and CPU+ANE are off by up to 27, 2 and 9 rotation codes, and the three units agree on 0 to 9% of values. Each unit repeats itself. So the Neural Engine cannot be the decoder both ends share; it can run a float teacher or a model that is not part of the byte contract.
+- **Neural Engine through Core ML** (`tools/ane_spike.py`, 256-256-90 ternary-weight MLP in fp16): the compute plan puts all 7 ops on the Neural Engine, but the engine computes in fp16. Against a float64 reference, CPU only, CPU+GPU and CPU+ANE are off by up to 27, 2 and 9 rotation codes, and the three units agree on 0 to 9% of values. Each unit repeats itself. Timed from native code with no Python (`tools/ane_native.swift`), at 240 entities the calls take 136 us (CPU), 516 us (CPU+GPU) and 223 us (CPU+ANE); at 1000 entities 334, 805 and 328 us. Python added about 15%, so Core ML's own cost per call is the floor. So the Neural Engine cannot be the decoder both ends share; it can run a float teacher or a model that is not part of the byte contract.
 
 ## Non-goals
 
