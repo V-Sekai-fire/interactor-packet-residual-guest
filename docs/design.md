@@ -32,6 +32,14 @@ A coded packet is 100 bytes and the wire carries batches of them, back to back. 
 
 A batch also gives a predictor a neighbour: the previous packet in the same batch shares its HLC and has the next gid. That would code the first packet of a slot, which is now sent verbatim, and a late joiner's first batch. It is a later predictor layer, not built.
 
+## Hardware: what can be the shared decoder
+
+The decoder both ends run must give the same bytes on every host, so it is integer. Measured on an Apple M2 Pro, with other jobs running (rough numbers):
+
+- **Metal, tiled integer kernel** (`slang/ternary_layer_tiled.slang`): bit-exact against numpy int64, 0.59 us per entity at 1000 or more entities, 256 x 256 layer.
+- **C++ target, one core**: bit-exact, about 5 us per entity for the same layer, not tuned.
+- **Neural Engine through Core ML** (`tools/ane_spike.py`, 256-256-90 ternary-weight MLP in fp16): the compute plan puts all 7 ops on the Neural Engine, but the engine computes in fp16. Against a float64 reference, CPU only, CPU+GPU and CPU+ANE are off by up to 27, 2 and 9 rotation codes, and the three units agree on 0 to 9% of values. Each unit repeats itself. So the Neural Engine cannot be the decoder both ends share; it can run a float teacher or a model that is not part of the byte contract.
+
 ## Non-goals
 
 - Lossy coding. No field is quantised, rounded or dropped. The decoder returns the current packet byte for byte.
