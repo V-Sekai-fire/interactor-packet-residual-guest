@@ -26,6 +26,12 @@ A float decoder gives a different last bit on a CPU and a GPU, and both ends mus
 - PARITY (decoder): C++ output equals an independent integer reference equals the GPU output, bit for bit.
 - NUMBER: bits per entity against 42.8, and the rotation escape rate.
 
+## Batching
+
+A coded packet is 100 bytes and the wire carries batches of them, back to back. The load of one packet sets how many fit in a batch, so a smaller packet means a larger batch. Measured in bytes per entity of a whole tick under zstd with the previous tick as a prefix, not per packet alone.
+
+A batch also gives a predictor a neighbour: the previous packet in the same batch shares its HLC and has the next gid. That would code the first packet of a slot, which is now sent verbatim, and a late joiner's first batch. It is a later predictor layer, not built.
+
 ## Non-goals
 
 - Lossy coding. No field is quantised, rounded or dropped. The decoder returns the current packet byte for byte.

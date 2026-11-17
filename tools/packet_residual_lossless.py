@@ -248,6 +248,8 @@ def main():
         check(f"GOLDEN ({want}): every packet comes back byte for byte", bad == 0, f"{bad} of {total} differ")
         check(f"INVARIANT ({want}): every coded packet is 100 bytes", all(len(w) == ent * SIZE for w in wire))
         cost[want] = with_prefix(wire)
+        if want == "kernel" and os.environ.get("DUMP_CODED"):  # the coded stream, for the native test to compare against
+            open(os.environ["DUMP_CODED"], "wb").write(b"".join(wire))
         top = ", ".join(f"{f} {nz[f]*100:.1f}%" for f in sorted(nz, key=lambda name: nz[name], reverse=True)[:5])
         print(f"INFO ({want}) verbatim {verbatim/total*100:.2f}%; non-zero residual, top: {top}")
         print(f"SIZE ({want}): {cost[want]:.0f} B/tick = {cost[want]/ent*8:.1f} bits/entity   (old layout {base:.0f} B/tick = {base/ent*8:.1f})")

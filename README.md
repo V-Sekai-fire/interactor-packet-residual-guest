@@ -11,6 +11,7 @@ A spike. The guest ELF is the target and is not built yet. What is here is the v
 ## What is here
 
 - `tools/packet_residual_lossless.py`: the codec with a pluggable `predict()` (default: the contract's Makima kernel from `contract-entity-packet`, ported in `tools/predict_kernel.py` and checked against its golden file; dead reckoning serves a slot's first packets, which lack the history the kernel needs) and its checks. A coded packet is exactly 100 bytes. Byte 51 is `0xFF` for a residual packet; any other value is the old packet, verbatim. No source packet can carry `0xFF`, so a packet that does not fit is sent as it is and nothing is refused.
+- `src/packet_residual.c`: the same codec in plain C with no I/O and no allocation, over the contract's emitted headers (`xr_grid_entity_packet.h`, `entity_predict.h`), which are included from a checkout and not copied. `tests/native_test.c` checks it against the Python codec on every packet.
 - `docs/design.md`: the four predictor layers, why the decoder must be pure integer, and the tests.
 
 ## Measured
@@ -39,6 +40,16 @@ PACKET_MODULE_DIR=~/src/mixer-broadcaster/clients/python/tools PREDICT_GOLDEN=PA
 ```
 
 `MMG_DIR` is a checkout of `V-Sekai-fire/interactor-motion-matching-guest` with `data/o3de-motionmatching`. The packet module is emitted from `contract-entity-packet` and is not copied here.
+
+## Native test
+
+```
+clang -O2 -ffp-contract=off -I<contract-entity-packet> -Isrc src/packet_residual.c tests/native_test.c -lm -o build/native_test
+DUMP_CODED=coded.bin PACKET_MODULE_DIR=... PREDICT_GOLDEN=... python3 tools/packet_residual_lossless.py frames.bin 240 400
+build/native_test frames.bin coded.bin 240 400
+```
+
+The C encoder writes the same bytes as the Python codec for every packet, and the C decoder returns every packet exactly.
 
 ## Licence
 
