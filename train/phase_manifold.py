@@ -34,8 +34,8 @@ class GDN2Enc(nn.Module):
     def __init__(self, H=2, dk=32, dv=32):
         super().__init__()
         self.H, self.dk, self.dv = H, dk, dv
-        self.q, self.k, self.v = nn.Linear(180, H * dk), nn.Linear(180, H * dk), nn.Linear(180, H * dv)
-        self.a, self.b, self.w = nn.Linear(180, H * dk), nn.Linear(180, H * dk), nn.Linear(180, H * dv)
+        self.q, self.k, self.v = nn.Linear(IND, H * dk), nn.Linear(IND, H * dk), nn.Linear(IND, H * dv)
+        self.a, self.b, self.w = nn.Linear(IND, H * dk), nn.Linear(IND, H * dk), nn.Linear(IND, H * dv)
         nn.init.constant_(self.a.bias, 2.0)
         self.out = nn.Linear(H * dv, D)
 
@@ -61,7 +61,7 @@ ENC = os.environ.get("PAE_ENC", "gdn2")
 class PAE(nn.Module):
     def __init__(self):
         super().__init__()
-        self.enc = GDN2Enc() if ENC == "gdn2" else nn.Sequential(nn.Conv1d(180, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, D, 5, padding=2))
+        self.enc = GDN2Enc() if ENC == "gdn2" else nn.Sequential(nn.Conv1d(IND, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, D, 5, padding=2))
         self.phase = nn.Linear(W, 2)
         self.dec = nn.Sequential(nn.Conv1d(D, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, 180, 5, padding=2))
         k = torch.arange(1, W // 2 + 1).float(); t = torch.arange(W).float() * DT
@@ -91,6 +91,23 @@ class PAE(nn.Module):
         return torch.cat([o[:, :, :-1], last[:, :, None]], 2)
 
 
+IN = os.environ.get("PAE_IN", "six")  # six | codes | ts
+IND = 210 if IN == "ts" else 180  # six: 6D matrix columns (smooth); codes: [wrapped code delta, absolute code] / 32768, the form the earlier GDN-2 students saw
+
+
+def feat(codes):
+    c = codes.reshape(len(codes), 90).astype(np.int64)
+    d = np.zeros_like(c); d[1:] = r.wrap16(c[1:] - c[:-1])
+    return (np.concatenate([d, c], 1) / 32768.0).astype(np.float32)
+
+
+def feat_ts(codes):
+    c = codes.reshape(len(codes), 30, 3).astype(np.int64)
+    d = np.zeros_like(c); d[1:] = r.wrap16(c[1:] - c[:-1])
+    tw = c[:, :, 2] / (65536.0 / (2 * np.pi))
+    return np.concatenate([d.reshape(len(c), 90) / 32768.0, c[:, :, :2].reshape(len(c), 60) / 32768.0, np.cos(tw), np.sin(tw)], 1).astype(np.float32)
+
+
 def load_train():
     names = set(r.CLIPS); seqs = []
     for f in sorted(glob.glob(r.T + "/more/*.npy")):
@@ -98,7 +115,7 @@ def load_train():
         C = np.load(f).astype(np.int64).reshape(-1, 30, 3); C[:, :, :2] *= -1
         for off in range(3):
             q = C[off::3]
-            if len(q) > W + 5: seqs.append(six(q))
+            if len(q) > W + 5: seqs.append((six(q), feat_ts(q) if IN == "ts" else feat(q)))
     return seqs
 
 
@@ -110,10 +127,23 @@ def rel_target(win):
     return torch.cat([rel, corr[:, :, None]], 2)
 
 
+def qsym(w, bits):  # symmetric per-output-row quantisation to a signed integer grid
+    flat = w.reshape(w.shape[0], -1); qmax = 2 ** (bits - 1) - 1
+    sc = flat.abs().amax(1, keepdim=True).clamp_min(1e-12) / qmax
+    return ((flat / sc).round().clamp(-qmax, qmax) * sc).reshape(w.shape)
+
+
+def qternary(w, block=128):  # ternary {-1,0,+1} with an absmean scale per block of 128 along each row (Bonsai 2 style)
+    flat = w.reshape(w.shape[0], -1); n = flat.shape[1]; pad = (-n) % block
+    f = torch.nn.functional.pad(flat, (0, pad)).reshape(w.shape[0], -1, block)
+    sc = f.abs().mean(-1, keepdim=True).clamp_min(1e-12)
+    return (torch.clamp((f / sc).round(), -1, 1) * sc).reshape(w.shape[0], -1)[:, :n].reshape(w.shape)
+
+
 def main():
     steps = int(sys.argv[1]) if len(sys.argv) > 1 else 6000
-    seqs = load_train(); lens = [len(s) for s in seqs]
-    X = torch.tensor(np.concatenate(seqs)).to(DEV)
+    seqs = load_train(); lens = [len(s[0]) for s in seqs]
+    X = torch.tensor(np.concatenate([q[0] for q in seqs])).to(DEV); XF = torch.tensor(np.concatenate([q[1] for q in seqs])).to(DEV)
     starts = np.concatenate([np.arange(o, o + L - W) for o, L in zip(np.cumsum([0] + lens[:-1]), lens)])
     print(f"encoder {ENC}; {len(seqs)} sequences, {sum(lens)} ticks, {len(starts)} windows, device {DEV}", flush=True)
     m = PAE().to(DEV); opt = torch.optim.Adam(m.parameters(), 1e-3)
@@ -124,20 +154,26 @@ def main():
     for it in range(steps):
         b = idx_t[torch.randint(len(idx_t), (256,), device=DEV)]
         win = X[b[:, None] + ar[None]].transpose(1, 2)                  # (B, 180, W+1)
-        out = m(win[:, :, :W])
+        inp = (X if IN == "six" else XF)[b[:, None] + ar[None]].transpose(1, 2)
+        out = m(inp[:, :, :W])
         tgt = rel_target(win)
         loss = ((out - tgt).abs().mean(1) * wt).mean()
         opt.zero_grad(); loss.backward(); opt.step(); sched.step()
         if it % 500 == 0 or it == steps - 1: print(f"step {it:5d} loss {loss.item():.5f}  {time.time() - t0:.0f}s", flush=True)
     m.eval()
+    evaluate(m, steps)
+
+
+def evaluate(m, steps, quant=True):
     tc = np.load(r.T + "/vae_testcodes.npy").reshape(8, 400, 30, 3).astype(np.int64)
     START = 101
     def predict(fscale=None):
         P = np.zeros((8, 400, 90), np.int64)
         for i in range(8):
-            xs = torch.tensor(six(tc[i])).to(DEV)
-            wins = torch.stack([xs[t - W:t].T for t in range(START, 400)])  # (T', 180, W)
-            with torch.no_grad(): corr = m(wins, None if fscale is None else fscale)[:, :, -1] / SCALE
+            xs = torch.tensor(six(tc[i])).to(DEV); xi = torch.tensor({"six": six, "codes": feat, "ts": feat_ts}[IN](tc[i])).to(DEV)
+            wins = torch.stack([xs[t - W:t].T for t in range(START, 400)])  # (T', 180, W) 6D, for dead reckoning
+            winp = torch.stack([xi[t - W:t].T for t in range(START, 400)])  # what the encoder is given
+            with torch.no_grad(): corr = m(winp, None if fscale is None else fscale)[:, :, -1] / SCALE
             out = (2 * wins[:, :, -1] - wins[:, :, -2] + corr).cpu().numpy()  # dead reckoning in 6D plus the correction
             R = oe.six_to_rot(out.reshape(-1, 30, 3, 2).astype(np.float64))
             P[i, START:] = r.codes(R).reshape(-1, 90)
@@ -161,7 +197,19 @@ def main():
     c1, c2 = cp.costs(res, A, B), cp.costs(res, B, A)
     print("\nbits per avatar-tick (size class per joint-component, tables fitted on four avatars, scored on the other four):")
     for n in res: print(f"  {n:34s} {(c1[n] + c2[n]) / 2:6.0f}   exact zero {np.mean(res[n] == 0) * 100:4.1f}%  escape {np.mean(np.abs(res[n]) > 126) * 100:4.1f}%")
-    f, Aa, Bb, s = m.params(torch.tensor(six(tc[0])[START - W:START].T[None]).to(DEV))
+    if not quant: return (c1["learned phase manifold"] + c2["learned phase manifold"]) / 2
+    f, Aa, Bb, s = m.params(torch.tensor(({"six": six, "codes": feat, "ts": feat_ts}[IN](tc[0]))[START - W:START].T[None]).to(DEV))
+    if quant:
+        import copy
+        base_bits = (c1["learned phase manifold"] + c2["learned phase manifold"]) / 2
+        print("\npost-training weight quantisation of the trained model (no retraining), bits per avatar-tick; dead reckoning 629:")
+        for name, fn in (("float", None), ("16-bit", lambda w: qsym(w, 16)), ("8-bit", lambda w: qsym(w, 8)), ("4-bit", lambda w: qsym(w, 4)), ("ternary, blocks of 128", qternary)):
+            mq = copy.deepcopy(m)
+            if fn is not None:
+                for n_, p_ in mq.named_parameters():
+                    if p_.dim() >= 2 and "tau" not in n_: p_.data = fn(p_.data)
+            res_q = evaluate(mq, steps, quant=False)
+            print(f"  {name:24s} {res_q:6.0f}")
     print("example latent frequencies (Hz) for walk_1:", np.round(f[0].detach().cpu().numpy(), 2))
 
 
