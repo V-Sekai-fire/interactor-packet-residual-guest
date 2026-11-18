@@ -13,7 +13,7 @@ import sys
 
 import numpy as np
 
-PROB_BITS = 14
+PROB_BITS = int(os.environ.get("PROB_BITS", "16"))
 M = 1 << PROB_BITS
 RANS_L = 1 << 23
 T = os.environ["TMPDIR"].rstrip("/")

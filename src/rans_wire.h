@@ -20,7 +20,7 @@
 extern "C" {
 #endif
 
-#define RW_PROB_BITS 14
+#define RW_PROB_BITS 16
 #define RW_SCALE (1u << RW_PROB_BITS)
 #define RW_SYMS 256
 
@@ -31,10 +31,10 @@ typedef struct {
 	uint8_t *bucket;       /* nctx * 256: for each slot >> (RW_PROB_BITS - 8), the first symbol that can hold it; owned by the caller */
 } rw_tables_t;
 
-/* Build the cumulative starts (start holds nctx * 257 values; a start is at most 1 << 14, so uint16 holds it). Returns 0, or -1 if a row does not sum to RW_SCALE or holds a zero. */
+/* Build the cumulative starts (start holds nctx * 257 values; a start is at most 65535 for every symbol that is used; the unused end entry wraps to 0). Returns 0, or -1 if a row does not sum to RW_SCALE or holds a zero. */
 int rw_tables_init(rw_tables_t *t, int nctx, const uint16_t *freq, uint16_t *start, uint8_t *bucket);
 
-/* Code n symbols, symbol i with context ctx[i]. A symbol costs at most 14 bits, so cap = 2 * n + 8 is always enough.
+/* Code n symbols, symbol i with context ctx[i]. A symbol costs at most 16 bits, so cap = 2 * n + 8 is always enough.
  * Returns the stream length, or 0 if cap is too small. */
 size_t rw_encode(const rw_tables_t *t, const uint8_t *syms, const uint16_t *ctx, size_t n, uint8_t *out, size_t cap);
 
