@@ -71,6 +71,7 @@ class GDN2Enc(nn.Module):
 
 
 ENC = os.environ.get("PAE_ENC", "gdn2")
+EXTRA = int(os.environ.get("PAE_EXTRA", "0"))  # side-information channels (a token) given to the decoder, same for every tick of the window
 
 
 class AttnEnc(nn.Module):
@@ -102,7 +103,7 @@ class PAE(nn.Module):
             self.tenc = nn.Sequential(nn.Conv1d(180, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, 2 * D, 5, padding=2))  # teacher: 6D window including the target tick
             self.senc = nn.Sequential(nn.Conv1d(IND, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, 3 * D, 5, padding=2))  # student: features, prior mean, prior log-variance
             self.dec = nn.Sequential(TConv(2 * D, 96, 5, padding=2), nn.ELU(), TConv(96, 180, 5, padding=2))
-        self.dec = nn.Sequential(TConv(D, 96, 5, padding=2), nn.ELU(), TConv(96, 180, 5, padding=2))
+        self.dec = nn.Sequential(TConv(D + EXTRA, 96, 5, padding=2), nn.ELU(), TConv(96, 180, 5, padding=2))
         k = torch.arange(1, W // 2 + 1).float(); t = torch.arange(W).float() * DT
         self.register_buffer("fk", k / (W * DT))
         self.register_buffer("C", torch.cos(2 * np.pi * self.fk[:, None] * t[None]))
@@ -135,13 +136,14 @@ class PAE(nn.Module):
         last = torch.sign(o[:, :, -1]) * torch.relu(o[:, :, -1].abs() - self.tau.abs() * SCALE)
         return torch.cat([o[:, :, :-1], last[:, :, None]], 2)
 
-    def forward(self, x, fscale=None, fut=None):
+    def forward(self, x, fscale=None, fut=None, extra=None):
         if TS: return self.ts(x, fut)
         if VAE >= 0:
             mu = self.enc(x); lv = self.lv(x).clamp(-8, 4)
             z = mu + torch.randn_like(mu) * torch.exp(0.5 * lv) if self.training else mu
             self.kl = 0.5 * (mu ** 2 + lv.exp() - 1 - lv).sum(1).mean()  # nats per tick of latent
             zz = torch.cat([z, z[:, :, -1:]], 2)  # the decoder predicts W + 1 ticks from W latent ticks
+            if EXTRA: zz = torch.cat([zz, (extra if extra is not None else torch.zeros(zz.shape[0], EXTRA, device=zz.device))[:, :, None].expand(-1, -1, W + 1)], 1)
             o = self.dec(zz)
             last = torch.sign(o[:, :, -1]) * torch.relu(o[:, :, -1].abs() - self.tau.abs() * SCALE)
             return torch.cat([o[:, :, :-1], last[:, :, None]], 2)
