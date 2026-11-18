@@ -71,6 +71,22 @@ class GDN2Enc(nn.Module):
 
 
 ENC = os.environ.get("PAE_ENC", "gdn2")
+
+
+class AttnEnc(nn.Module):
+    """Causal attention over the window: every tick queries itself and all earlier ticks (keys and values are the window's own ticks), 4 heads, learned position embedding, residual + small feed-forward -> D values per tick."""
+    def __init__(self, d=64):
+        super().__init__()
+        self.proj = nn.Linear(IND, d); self.pos = nn.Parameter(torch.randn(W, d) * 0.02)
+        self.att = nn.MultiheadAttention(d, 4, batch_first=True)
+        self.ff = nn.Sequential(nn.Linear(d, 128), nn.ELU(), nn.Linear(128, D))
+        self.register_buffer("mask", torch.triu(torch.ones(W, W, dtype=torch.bool), 1))
+
+    def forward(self, x):  # (B, IND, W) -> (B, D, W)
+        h = self.proj(x.transpose(1, 2)) + self.pos
+        h = h + self.att(h, h, h, attn_mask=self.mask, need_weights=False)[0]
+        return self.ff(h).transpose(1, 2)
+
 TS = os.environ.get("VAE_TS", "0") == "1"  # teacher sees the next tick, student only the past; KL(teacher || student prior) is the bottleneck
 VAE = float(os.environ.get("VAE_BETA", "-1"))  # >= 0: replace the sinusoid with Gaussian latents and a KL(q || N(0,1)) rate term of weight beta (the standard information bottleneck)
 
@@ -78,7 +94,7 @@ VAE = float(os.environ.get("VAE_BETA", "-1"))  # >= 0: replace the sinusoid with
 class PAE(nn.Module):
     def __init__(self):
         super().__init__()
-        self.enc = GDN2Enc() if ENC == "gdn2" else nn.Sequential(nn.Conv1d(IND, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, D, 5, padding=2))
+        self.enc = GDN2Enc() if ENC == "gdn2" else AttnEnc() if ENC == "attn" else nn.Sequential(nn.Conv1d(IND, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, D, 5, padding=2))
         self.phase = nn.Linear(W, 2)
         self.lv = nn.Conv1d(IND, D, 5, padding=2)  # log-variance head, used only in the VAE mode
         self.kl = torch.zeros(())

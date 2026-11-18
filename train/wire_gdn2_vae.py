@@ -42,6 +42,9 @@ def train_codes():
 Wt = np.frombuffer(b"".join(pickle.load(open(T + "/coded_wire_train.pkl", "rb"))), np.uint8).reshape(400, 26, 3000).transpose(1, 0, 2).copy()  # our own caches
 Wv = np.frombuffer(b"".join(pickle.load(open(T + "/coded_wire.pkl", "rb"))), np.uint8).reshape(400, 8, 3000).transpose(1, 0, 2).copy()
 Rt = np.stack([six(c) for c in train_codes()]); Rv = np.stack([six(c) for c in np.load(T + "/vae_testcodes.npy").reshape(8, 400, 30, 3).astype(np.int64)])
+KIN = os.environ.get("KIN", "1") == "1"  # the model sees only the kinematic bytes: residual scalars 4..15 and escape bytes 16..50 of each joint packet; the other bytes use the static tables
+KIDX = np.array([j * 100 + q for j in range(30) for q in range(4, 51)]) if KIN else np.arange(3000)
+NC = len(KIDX); IN = 2 * NC + 180; REST = np.setdiff1d(np.arange(3000), KIDX); KT = torch.tensor(KIDX).to(DEV)
 Bt, Bv = torch.tensor(Wt).to(DEV), torch.tensor(Wv).to(DEV); Rt, Rv = torch.tensor(Rt).to(DEV), torch.tensor(Rv).to(DEV)
 
 
@@ -53,18 +56,19 @@ cnt = np.full((3000, 256), 0.05)
 for a in range(26):
     np.add.at(cnt, (np.tile(np.arange(3000), 399), Wt[a, 1:].reshape(-1)), 1)
 BASE = torch.tensor(np.log(cnt / cnt.sum(1, keepdims=True)), dtype=torch.float32).to(DEV)  # the static tables, log-probabilities
+BASEK = BASE[KT]
 
 
 class Model(nn.Module):
     def __init__(self):
         super().__init__()
-        self.proj = nn.Linear(6180, H * (4 * DK + 2 * DV))
+        self.proj = nn.Linear(IN, H * (4 * DK + 2 * DV))
         nn.init.constant_(self.proj.bias, 0.0); self.proj.bias.data[2 * H * DK:3 * H * DK] = 2.0  # decay gate a starts near 1
         self.mu, self.lv = nn.Linear(H * DV, D), nn.Linear(H * DV, D)
-        self.gate = nn.Linear(D, 3000 * K); nn.init.zeros_(self.gate.weight); nn.init.zeros_(self.gate.bias)
-        self.tab = nn.Parameter(BASE[None].repeat(K, 1, 1) + 0.3 * torch.randn(K, 3000, 256, device=DEV) * (torch.arange(K, device=DEV) > 0).float()[:, None, None])
+        self.gate = nn.Linear(D, NC * K); nn.init.zeros_(self.gate.weight); nn.init.zeros_(self.gate.bias)
+        self.tab = nn.Parameter(BASEK[None].repeat(K, 1, 1) + 0.3 * torch.randn(K, NC, 256, device=DEV) * (torch.arange(K, device=DEV) > 0).float()[:, None, None])
 
-    def gdn(self, x):  # (B, L, 6180) -> (B, L, H*DV)
+    def gdn(self, x):  # (B, L, IN) -> (B, L, H*DV)
         Bn, Ln, _ = x.shape; p = self.proj(x); q, k, a, b, v, w = torch.split(p, [H * DK] * 4 + [H * DV] * 2, -1)
         q, k = [nn.functional.normalize(u.view(Bn, Ln, H, DK), dim=-1, eps=1e-4) for u in (q, k)]
         al, be, wr = torch.sigmoid(a).view(Bn, Ln, H, DK), torch.sigmoid(b).view(Bn, Ln, H, DK), torch.sigmoid(w).view(Bn, Ln, H, DV); v = v.view(Bn, Ln, H, DV)
@@ -79,9 +83,9 @@ class Model(nn.Module):
         o = self.gdn(x); mu, lv = self.mu(o), self.lv(o).clamp(-8, 4)
         z = mu + torch.randn_like(mu) * torch.exp(0.5 * lv) if self.training else mu
         kl = 0.5 * (mu ** 2 + lv.exp() - 1 - lv).sum(-1)
-        g = torch.log_softmax(self.gate(z).view(*z.shape[:2], 3000, K), -1)
+        g = torch.log_softmax(self.gate(z).view(*z.shape[:2], NC, K), -1)
         tab = torch.log_softmax(self.tab, -1).permute(1, 0, 2)  # (3000, K, 256)
-        idx = torch.arange(3000, device=x.device)
+        idx = torch.arange(NC, device=x.device)
         lp = tab[idx[None, None, :], :, y.long()]  # (B, L, 3000, K)
         return -torch.logsumexp(g + lp, -1).sum(-1) / np.log(2), kl / np.log(2)
 
@@ -92,19 +96,22 @@ sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, STEPS)
 t0 = time.time()
 for it in range(STEPS):
     a = torch.randint(26, (BATCH,)); s = torch.randint(1, 399 - L, (BATCH,)); tt = s[:, None] + torch.arange(L)[None]
-    x = feats(Bt[a[:, None], tt], Rt[a[:, None], tt]); y = Bt[a[:, None], tt + 1]
+    x = feats(Bt[a[:, None], tt][..., KT], Rt[a[:, None], tt]); y = Bt[a[:, None], tt + 1][..., KT]
     m.train(); bits, kl = m(x, y); loss = bits.mean() / 8 + VB * kl.mean()
     opt.zero_grad(); loss.backward(); opt.step(); sched.step()
     if it % 100 == 0 or it == STEPS - 1: print(f"step {it:5d} bytes per avatar-tick {bits.mean().item() / 8:6.1f}  KL {kl.mean().item():5.1f} bits  {time.time() - t0:.0f}s", flush=True)
 
 m.eval()
 with torch.no_grad():
-    x = feats(Bv[:, 1:399], Rv[:, 1:399]); y = Bv[:, 2:400]; sl = slice(100, None)  # ticks 101 and later
+    yfull = Bv[:, 2:400]; x = feats(Bv[:, 1:399][..., KT], Rv[:, 1:399]); y = yfull[..., KT]; sl = slice(100, None)  # ticks 101 and later
     bits, kl = m(x, y); mod = bits[:, sl].mean().item() / 8
     other = m(torch.roll(x, 1, 0), y)[0][:, sl].mean().item() / 8
     shuf = m(x[:, torch.randperm(398)], y)[0][:, sl].mean().item() / 8
-    static = -(BASE[torch.arange(3000, device=DEV)[None, None, :], y.long()]).sum(-1)[:, sl].mean().item() / np.log(2) / 8
+    static = -(BASE[torch.arange(3000, device=DEV)[None, None, :], yfull.long()]).sum(-1)[:, sl].mean().item() / np.log(2) / 8
+    rest = -(BASE[torch.tensor(REST).to(DEV)[None, None, :], yfull[..., torch.tensor(REST).to(DEV)].long()]).sum(-1)[:, sl].mean().item() / np.log(2) / 8  # the bytes the model does not see
+    kin_static = static - rest; mod += rest; other += rest; shuf += rest
 print(f"\nideal bytes per avatar-tick on the 8 held-out avatars, ticks 101-399 (x4 = bytes per tick of four avatars):")
-for name, v in (("static tables, joint x byte position (26 library avatars)", static), ("GDN-2 + VAE bottleneck, whole 100 bytes", mod), ("control: the model fed another avatar's input", other), ("control: the model fed its own ticks shuffled", shuf)):
+for name, v in (("static tables, joint x byte position (26 library avatars)", static), ("GDN-2 + VAE bottleneck on the kinematic bytes" if KIN else "GDN-2 + VAE bottleneck, whole 100 bytes", mod), ("control: the model fed another avatar's input", other), ("control: the model fed its own ticks shuffled", shuf)):
     print(f"  {name:58s} {v:6.1f}  (x4 = {v * 4:5.0f})  {(v - static) / static * 100:+5.1f}%")
+print(f"  the kinematic bytes are {kin_static:.1f} of the static {static:.1f}; the other {rest:.1f} stay with the static tables ({NC} contexts for the model, {len(REST)} left out)")
 print(f"  bottleneck KL on the test avatars: {kl[:, sl].mean().item():.1f} bits per avatar-tick (side information if the latent were sent)")
