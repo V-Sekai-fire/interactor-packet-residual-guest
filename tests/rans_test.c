@@ -38,8 +38,9 @@ int main(int argc, char **argv) {
 	for (size_t i = 0; i < nt / 2; i++) freq[i] = (uint16_t)(tb[2 * i] | (tb[2 * i + 1] << 8));
 	uint16_t *start = malloc((size_t)NCTX * 257 * 2);
 	rw_tables_t t;
+	uint8_t *bucket = malloc((size_t)NCTX * 256);
 	int fails = 0, ok;
-	ok = rw_tables_init(&t, NCTX, freq, start) == 0;
+	ok = rw_tables_init(&t, NCTX, freq, start, bucket) == 0;
 	printf("%s tables: every row sums to %u and holds no zero\n", ok ? "PASS" : "FAIL", RW_SCALE); fails += !ok;
 	uint16_t ctx[TICK];
 	for (int i = 0; i < TICK; i++) ctx[i] = (uint16_t)(i % 3000);  /* four avatars x 30 joints x 100 bytes, in the Python order */

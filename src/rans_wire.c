@@ -10,7 +10,7 @@
 
 #define RANS_L (1u << 23)
 
-int rw_tables_init(rw_tables_t *t, int nctx, const uint16_t *freq, uint16_t *start) {
+int rw_tables_init(rw_tables_t *t, int nctx, const uint16_t *freq, uint16_t *start, uint8_t *bucket) {
 	for (int c = 0; c < nctx; c++) {
 		uint32_t sum = 0;
 		for (int s = 0; s < RW_SYMS; s++) {
@@ -22,9 +22,19 @@ int rw_tables_init(rw_tables_t *t, int nctx, const uint16_t *freq, uint16_t *sta
 		if (sum != RW_SCALE) return -1;
 		start[(size_t)c * (RW_SYMS + 1) + RW_SYMS] = (uint16_t)sum;
 	}
+	for (int c = 0; c < nctx; c++) {
+		const uint16_t *st = start + (size_t)c * (RW_SYMS + 1);
+		int s = 0;
+		for (int b = 0; b < 256; b++) {  /* the symbol holding the first slot of the bucket */
+			uint32_t slot = (uint32_t)b << (RW_PROB_BITS - 8);
+			while (s < RW_SYMS - 1 && st[s + 1] <= slot) s++;
+			bucket[(size_t)c * 256 + b] = (uint8_t)s;
+		}
+	}
 	t->nctx = nctx;
 	t->freq = freq;
 	t->start = start;
+	t->bucket = bucket;
 	return 0;
 }
 
@@ -62,11 +72,8 @@ int rw_decode(const rw_tables_t *t, const uint8_t *stream, size_t len, const uin
 		if (c >= (uint32_t)t->nctx) return -1;
 		const uint16_t *st = t->start + (size_t)c * (RW_SYMS + 1);
 		uint32_t slot = x & (RW_SCALE - 1);
-		int lo = 0, hi = RW_SYMS - 1;  /* the largest s with st[s] <= slot */
-		while (lo < hi) {
-			int mid = (lo + hi + 1) >> 1;
-			if (st[mid] <= slot) lo = mid; else hi = mid - 1;
-		}
+		int lo = t->bucket[(size_t)c * 256 + (slot >> (RW_PROB_BITS - 8))];  /* the largest s with st[s] <= slot: start at the bucket's first symbol, walk up */
+		while (lo < RW_SYMS - 1 && st[lo + 1] <= slot) lo++;
 		syms[i] = (uint8_t)lo;
 		x = (uint32_t)t->freq[(size_t)c * RW_SYMS + lo] * (x >> RW_PROB_BITS) + slot - st[lo];
 		while (x < RANS_L) {

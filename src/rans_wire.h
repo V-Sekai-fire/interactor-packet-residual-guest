@@ -28,10 +28,11 @@ typedef struct {
 	int nctx;
 	const uint16_t *freq;  /* nctx * 256, borrowed */
 	uint16_t *start;       /* nctx * 257 cumulative starts, owned by the caller */
+	uint8_t *bucket;       /* nctx * 256: for each slot >> (RW_PROB_BITS - 8), the first symbol that can hold it; owned by the caller */
 } rw_tables_t;
 
 /* Build the cumulative starts (start holds nctx * 257 values; a start is at most 1 << 14, so uint16 holds it). Returns 0, or -1 if a row does not sum to RW_SCALE or holds a zero. */
-int rw_tables_init(rw_tables_t *t, int nctx, const uint16_t *freq, uint16_t *start);
+int rw_tables_init(rw_tables_t *t, int nctx, const uint16_t *freq, uint16_t *start, uint8_t *bucket);
 
 /* Code n symbols, symbol i with context ctx[i]. A symbol costs at most 14 bits, so cap = 2 * n + 8 is always enough.
  * Returns the stream length, or 0 if cap is too small. */
