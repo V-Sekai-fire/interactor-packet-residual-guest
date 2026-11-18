@@ -18,7 +18,7 @@ import rot_frontier as r
 import one_euro_rot as oe
 import cycle_predictor as cp
 
-W, D, DT = 32, 8, 0.1
+W, D, DT = int(os.environ.get("PAE_W", "32")), 8, 0.1
 SCALE = 30.0
 DEV = "mps" if torch.backends.mps.is_available() else "cpu"
 torch.manual_seed(0); np.random.seed(0)
@@ -46,7 +46,7 @@ class TConv(nn.Conv1d):
 class GDN2Enc(nn.Module):
     """Gated DeltaNet-2 (arXiv 2605.22791, clean-room from the equations) as the encoder: per tick, S^T_t = (S^T_{t-1} Dec_t) - ((S^T_{t-1} Dec_t)(b_t * k_t) - w_t * v_t) k_t^T with
     channel-wise decay, erase and write gates; o_t = S^T_t q_t; a per-tick linear reads the D latent values from o_t. (B, 180, W) -> (B, D, W)."""
-    def __init__(self, H=2, dk=32, dv=32):
+    def __init__(self, H=int(os.environ.get("GH", "2")), dk=int(os.environ.get("GK", "32")), dv=int(os.environ.get("GV", "32"))):
         super().__init__()
         self.H, self.dk, self.dv = H, dk, dv
         self.q, self.k, self.v = TLinear(IND, H * dk), TLinear(IND, H * dk), TLinear(IND, H * dv)  # the gates a, b, w stay float
