@@ -18,7 +18,7 @@ import rot_frontier as r
 import one_euro_rot as oe
 import cycle_predictor as cp
 
-W, D, DT = int(os.environ.get("PAE_W", "32")), 8, 0.1
+W, D, DT = int(os.environ.get("PAE_W", "32")), 8, 0.05  # 20 Hz ticks
 SCALE = 30.0
 DEV = "mps" if torch.backends.mps.is_available() else "cpu"
 torch.manual_seed(0); np.random.seed(0)
