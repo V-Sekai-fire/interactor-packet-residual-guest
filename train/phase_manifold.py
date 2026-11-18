@@ -71,6 +71,7 @@ class GDN2Enc(nn.Module):
 
 
 ENC = os.environ.get("PAE_ENC", "gdn2")
+TS = os.environ.get("VAE_TS", "0") == "1"  # teacher sees the next tick, student only the past; KL(teacher || student prior) is the bottleneck
 VAE = float(os.environ.get("VAE_BETA", "-1"))  # >= 0: replace the sinusoid with Gaussian latents and a KL(q || N(0,1)) rate term of weight beta (the standard information bottleneck)
 
 
@@ -81,12 +82,17 @@ class PAE(nn.Module):
         self.phase = nn.Linear(W, 2)
         self.lv = nn.Conv1d(IND, D, 5, padding=2)  # log-variance head, used only in the VAE mode
         self.kl = torch.zeros(())
+        if TS:
+            self.tenc = nn.Sequential(nn.Conv1d(180, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, 2 * D, 5, padding=2))  # teacher: 6D window including the target tick
+            self.senc = nn.Sequential(nn.Conv1d(IND, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, 3 * D, 5, padding=2))  # student: features, prior mean, prior log-variance
+            self.dec = nn.Sequential(TConv(2 * D, 96, 5, padding=2), nn.ELU(), TConv(96, 180, 5, padding=2))
         self.dec = nn.Sequential(TConv(D, 96, 5, padding=2), nn.ELU(), TConv(96, 180, 5, padding=2))
         k = torch.arange(1, W // 2 + 1).float(); t = torch.arange(W).float() * DT
         self.register_buffer("fk", k / (W * DT))
         self.register_buffer("C", torch.cos(2 * np.pi * self.fk[:, None] * t[None]))
         self.register_buffer("S", torch.sin(2 * np.pi * self.fk[:, None] * t[None]))
         self.register_buffer("tt", torch.arange(W + 1).float() * DT)
+        if TS: self.dec = nn.Sequential(TConv(2 * D, 96, 5, padding=2), nn.ELU(), TConv(96, 180, 5, padding=2))
         self.tau = nn.Parameter(torch.full((180,), float(os.environ.get("TAU0", "0.0001"))))
 
     def params(self, x):  # x (B, 180, W)
@@ -100,7 +106,21 @@ class PAE(nn.Module):
         s = torch.atan2(xy[..., 1], xy[..., 0]) / (2 * np.pi)
         return f, A, B, s
 
-    def forward(self, x, fscale=None):
+    def ts(self, x, fut=None):
+        sx = self.senc(x); h, mup, lvp = sx[:, :D], sx[:, D:2 * D, -1], sx[:, 2 * D:, -1].clamp(-8, 4)
+        if fut is not None:
+            t = self.tenc(fut)[:, :, -1]; muq, lvq = t[:, :D], t[:, D:].clamp(-8, 4)
+            z = muq + torch.randn_like(muq) * torch.exp(0.5 * lvq) if self.training else muq
+            self.kl = 0.5 * (lvp - lvq + (lvq.exp() + (muq - mup) ** 2) / lvp.exp() - 1).sum(1).mean()  # KL(q || p), nats per avatar-tick
+        else:
+            z = mup
+        hh = torch.cat([h, h[:, :, -1:]], 2)
+        o = self.dec(torch.cat([hh, z[:, :, None].expand(-1, -1, W + 1)], 1))
+        last = torch.sign(o[:, :, -1]) * torch.relu(o[:, :, -1].abs() - self.tau.abs() * SCALE)
+        return torch.cat([o[:, :, :-1], last[:, :, None]], 2)
+
+    def forward(self, x, fscale=None, fut=None):
+        if TS: return self.ts(x, fut)
         if VAE >= 0:
             mu = self.enc(x); lv = self.lv(x).clamp(-8, 4)
             z = mu + torch.randn_like(mu) * torch.exp(0.5 * lv) if self.training else mu
@@ -181,9 +201,10 @@ def main():
         b = idx_t[torch.randint(len(idx_t), (256,), device=DEV)]
         win = X[b[:, None] + ar[None]].transpose(1, 2)                  # (B, 180, W+1)
         inp = (X if IN == "six" else XF)[b[:, None] + ar[None]].transpose(1, 2)
-        out = m(inp[:, :, :W])
+        out = m(inp[:, :, :W], None, win if TS else None)
         tgt = rel_target(win)
         loss = ((out - tgt).abs().mean(1) * wt).mean() + (VAE * m.kl if VAE >= 0 else 0)
+        if TS: loss = loss + ((m(inp[:, :, :W]) - tgt).abs().mean(1) * wt).mean()  # the student alone, with its own prior, must also predict
         opt.zero_grad(); loss.backward(); opt.step(); sched.step()
         if it % 500 == 0 or it == steps - 1: print(f"step {it:5d} loss {loss.item():.5f}  {time.time() - t0:.0f}s", flush=True)
     m.eval()
@@ -193,13 +214,14 @@ def main():
 def evaluate(m, steps, quant=True):
     tc = np.load(r.T + "/vae_testcodes.npy").reshape(8, 400, 30, 3).astype(np.int64)
     START = 101
-    def predict(fscale=None):
+    def predict(fscale=None, oracle=False):
         P = np.zeros((8, 400, 90), np.int64)
         for i in range(8):
             xs = torch.tensor(six(tc[i])).to(DEV); xi = torch.tensor({"six": six, "codes": feat, "ts": feat_ts}[IN](tc[i])).to(DEV)
             wins = torch.stack([xs[t - W:t].T for t in range(START, 400)])  # (T', 180, W) 6D, for dead reckoning
             winp = torch.stack([xi[t - W:t].T for t in range(START, 400)])  # what the encoder is given
-            with torch.no_grad(): corr = m(winp, None if fscale is None else fscale)[:, :, -1] / SCALE
+            fut = torch.stack([xs[t - W:t + 1].T for t in range(START, 400)]) if oracle else None
+            with torch.no_grad(): corr = m(winp, None if fscale is None else fscale, fut)[:, :, -1] / SCALE
             out = (2 * wins[:, :, -1] - wins[:, :, -2] + corr).cpu().numpy()  # dead reckoning in 6D plus the correction
             R = oe.six_to_rot(out.reshape(-1, 30, 3, 2).astype(np.float64))
             P[i, START:] = r.codes(R).reshape(-1, 90)
@@ -215,6 +237,8 @@ def evaluate(m, steps, quant=True):
     dr = np.stack([r.wrap16(C[i, START:] - (C[i, START - 1:-1] + r.wrap16(C[i, START - 1:-1] - C[i, START - 2:-2]))) for i in range(8)])
     res["dead reckoning"] = dr
     P = predict(); res["dead reckoning in 6D (no model)"] = r.wrap16(C[:, START:] - dr6()); res["learned phase manifold"] = r.wrap16(C[:, START:] - P[:, START:])
+    if TS:
+        P3 = predict(oracle=True); res["oracle: the teacher's latent (needs the future)"] = r.wrap16(C[:, START:] - P3[:, START:])
     rng = np.random.default_rng(5); fs = torch.tensor(rng.uniform(0.5, 2.0, (1, D)).astype(np.float32)).to(DEV)
     P2 = predict(fs); res["control, frequencies scrambled"] = r.wrap16(C[:, START:] - P2[:, START:])
     # control: predict "no change" (copy the last tick) for scale
