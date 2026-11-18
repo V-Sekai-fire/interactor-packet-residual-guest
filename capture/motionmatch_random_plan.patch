@@ -1,0 +1,123 @@
+diff --git a/vsk_model_explorer/core/MotionMatch.gd b/vsk_model_explorer/core/MotionMatch.gd
+index 2c7aa3a..422be2a 100644
+--- a/vsk_model_explorer/core/MotionMatch.gd
++++ b/vsk_model_explorer/core/MotionMatch.gd
+@@ -74,6 +74,7 @@ var _player: AnimationPlayer
+ var _tree: AnimationTree
+ var _node: MotionMatchNode
+ var _skeleton: Skeleton3D
++var _pose_header := false
+ var _keys: PackedStringArray = []
+ var _hips_track := -1
+ var _hips_path := ""
+@@ -103,6 +104,7 @@ var _test_jump_cm := 0  # the length the test asks of its jump (0: any)
+ var _start_after_load := false
+ var _jumping := false
+ var _kind := 0
++var _sim_t := 0.0  # seconds the controller has stepped, for the capture trace
+ var _target := Vector3.ZERO
+ var _has_target := false
+ var _target_run := false
+@@ -1121,6 +1123,40 @@ func _begin() -> void:
+ 	say(HELP)
+ 
+ 
++func _random_plan() -> Array:
++	var rng := RandomNumberGenerator.new()
++	rng.seed = int(OS.get_environment("MOVE_SEED")) if OS.get_environment("MOVE_SEED") != "" else 1
++	var n := int(OS.get_environment("MOVE_SEGMENTS")) if OS.get_environment("MOVE_SEGMENTS") != "" else 24
++	var mode_a := OS.get_environment("MOVE_MODE") if OS.get_environment("MOVE_MODE") != "" else "mixed"
++	var run_a := OS.get_environment("MOVE_RUN") if OS.get_environment("MOVE_RUN") != "" else "mixed"
++	var turn_a := OS.get_environment("MOVE_TURN") if OS.get_environment("MOVE_TURN") != "" else "low"
++	var jump_a := OS.get_environment("MOVE_JUMP") == "1"
++	var max_turn := 20.0 if turn_a == "low" else 120.0
++	var heading := 0.0
++	var out := []
++	for i in n:
++		heading = fposmod(heading + rng.randf_range(-max_turn, max_turn), 360.0)
++		var mode := STAND
++		match mode_a:
++			"crouch":
++				mode = CROUCH
++			"crawl":
++				mode = CRAWL
++			"mixed":
++				var r := rng.randf()
++				mode = STAND if r < 0.7 else (CROUCH if r < 0.88 else CRAWL)
++		var running := false
++		if mode == STAND:
++			running = (rng.randf() < 0.4) if run_a == "mixed" else (run_a == "1")
++		var mag := 1.0 if running else rng.randf_range(0.35, 1.0)
++		var dir := Vector2(sin(deg_to_rad(heading)), cos(deg_to_rad(heading))) * mag
++		if rng.randf() < 0.08:
++			dir = Vector2.ZERO  # let go of the stick: stop
++		var jump := jump_a and mode == STAND and rng.randf() < 0.2
++		out.append(["r%d" % i, dir, running, rng.randf_range(1.5, 4.0), heading, mode, jump])
++	return out
++
++
+ func _input_dir() -> Vector2:
+ 	if _test:
+ 		return _test_input
+@@ -1152,6 +1188,7 @@ func _process(delta: float) -> void:
+ 	if delta <= 0.0:
+ 		return
+ 	var dt: float = min(delta, 1.0 / 20.0)
++	_sim_t += dt
+ 	var input := _input_dir()
+ 	var running := (
+ 		_test_run
+@@ -1245,7 +1282,7 @@ func _process(delta: float) -> void:
+ 		var hw := (_skeleton.global_transform * _skeleton.get_bone_global_pose(hb)).origin
+ 		print(
+ 			(
+-				"MOVE-TRACE %d %s t=%.3f hips=%.3f,%.3f char=%.3f,%.3f"
++				"MOVE-TRACE %d %s t=%.3f hips=%.3f,%.3f char=%.3f,%.3f sim=%.4f"
+ 				% [
+ 					Engine.get_process_frames(),
+ 					_node.names[_clip] if _clip >= 0 and _clip < _node.names.size() else "",
+@@ -1253,10 +1290,23 @@ func _process(delta: float) -> void:
+ 					hw.x,
+ 					hw.z,
+ 					char_scene.x,
+-					char_scene.z
++					char_scene.z,
++					_sim_t
+ 				]
+ 			)
+ 		)
++	if _trace and OS.get_environment("MOVE_POSE") == "1" and _skeleton:
++		if not _pose_header:
++			_pose_header = true
++			var names := PackedStringArray()
++			for b in _skeleton.get_bone_count():
++				names.append(_skeleton.get_bone_name(b))
++			print("MOVE-BONES ", " ".join(names))
++		var parts := PackedStringArray()
++		for b in _skeleton.get_bone_count():
++			var q := _skeleton.get_bone_pose_rotation(b)
++			parts.append("%.6f,%.6f,%.6f,%.6f" % [q.x, q.y, q.z, q.w])
++		print("MOVE-POSE %d %s" % [Engine.get_process_frames(), " ".join(parts)])
+ 	# The camera follows.
+ 	var cc := get_parent().get_node_or_null("CamController") as Node3D
+ 	if cc:
+@@ -1345,6 +1395,10 @@ func _run_test() -> void:
+ 	# MOVE_STEPS=course-stages: the course in stages, each ending when the hips reach its stop distance (metres from
+ 	# the start, in the scaled course; 0.851 of the course's own metres for the 1.75 m person), with the pose kind the
+ 	# station asks for: crouch under the bar, crawl through the tunnel, jump the gap.
++	# MOVE_STEPS=random: a seeded random walk over the controller. Level attributes (environment): MOVE_SEED, MOVE_SEGMENTS (default 24),
++	# MOVE_MODE stand|crouch|crawl|mixed, MOVE_RUN 0|1|mixed, MOVE_TURN low|high (heading change per segment), MOVE_JUMP 0|1.
++	if only == "random":
++		plan = _random_plan()
+ 	var stage_stop := {}
+ 	if only == "course-stages":
+ 		plan = [
+@@ -1375,7 +1429,7 @@ func _run_test() -> void:
+ 		}
+ 	var ok := keys_ok and _test_loops()
+ 	for step in plan:
+-		if only != "" and only != "course-stages" and not step[0] in only.split(","):
++		if only != "" and only != "course-stages" and only != "random" and not step[0] in only.split(","):
+ 			continue
+ 		_test_input = step[1]
+ 		_test_run = step[2]
