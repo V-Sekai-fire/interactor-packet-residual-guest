@@ -71,6 +71,7 @@ class GDN2Enc(nn.Module):
 
 
 ENC = os.environ.get("PAE_ENC", "gdn2")
+VAE = float(os.environ.get("VAE_BETA", "-1"))  # >= 0: replace the sinusoid with Gaussian latents and a KL(q || N(0,1)) rate term of weight beta (the standard information bottleneck)
 
 
 class PAE(nn.Module):
@@ -78,6 +79,8 @@ class PAE(nn.Module):
         super().__init__()
         self.enc = GDN2Enc() if ENC == "gdn2" else nn.Sequential(nn.Conv1d(IND, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, D, 5, padding=2))
         self.phase = nn.Linear(W, 2)
+        self.lv = nn.Conv1d(IND, D, 5, padding=2)  # log-variance head, used only in the VAE mode
+        self.kl = torch.zeros(())
         self.dec = nn.Sequential(TConv(D, 96, 5, padding=2), nn.ELU(), TConv(96, 180, 5, padding=2))
         k = torch.arange(1, W // 2 + 1).float(); t = torch.arange(W).float() * DT
         self.register_buffer("fk", k / (W * DT))
@@ -98,6 +101,14 @@ class PAE(nn.Module):
         return f, A, B, s
 
     def forward(self, x, fscale=None):
+        if VAE >= 0:
+            mu = self.enc(x); lv = self.lv(x).clamp(-8, 4)
+            z = mu + torch.randn_like(mu) * torch.exp(0.5 * lv) if self.training else mu
+            self.kl = 0.5 * (mu ** 2 + lv.exp() - 1 - lv).sum(1).mean()  # nats per tick of latent
+            zz = torch.cat([z, z[:, :, -1:]], 2)  # the decoder predicts W + 1 ticks from W latent ticks
+            o = self.dec(zz)
+            last = torch.sign(o[:, :, -1]) * torch.relu(o[:, :, -1].abs() - self.tau.abs() * SCALE)
+            return torch.cat([o[:, :, :-1], last[:, :, None]], 2)
         f, A, B, s = self.params(x)
         if fscale is not None: f = f * fscale
         curve = A[..., None] * torch.sin(2 * np.pi * (f[..., None] * self.tt - s[..., None])) + B[..., None]
@@ -161,7 +172,7 @@ def main():
     X = torch.tensor(np.concatenate([q[0] for q in seqs])).to(DEV); XF = torch.tensor(np.concatenate([q[1] for q in seqs])).to(DEV)
     starts = np.concatenate([np.arange(o, o + L - W) for o, L in zip(np.cumsum([0] + lens[:-1]), lens)])
     print(f"encoder {ENC}; {len(seqs)} sequences, {sum(lens)} ticks, {len(starts)} windows, device {DEV}", flush=True)
-    m = PAE().to(DEV); opt = torch.optim.Adam(m.parameters(), 1e-3)
+    m = PAE().to(DEV); m.train(); opt = torch.optim.Adam(m.parameters(), 1e-3)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, steps)
     idx_t = torch.tensor(starts).to(DEV); ar = torch.arange(W + 1).to(DEV)
     wt = torch.ones(W + 1).to(DEV); wt[-1] = float(os.environ.get("LASTW", "1000"))
@@ -172,7 +183,7 @@ def main():
         inp = (X if IN == "six" else XF)[b[:, None] + ar[None]].transpose(1, 2)
         out = m(inp[:, :, :W])
         tgt = rel_target(win)
-        loss = ((out - tgt).abs().mean(1) * wt).mean()
+        loss = ((out - tgt).abs().mean(1) * wt).mean() + (VAE * m.kl if VAE >= 0 else 0)
         opt.zero_grad(); loss.backward(); opt.step(); sched.step()
         if it % 500 == 0 or it == steps - 1: print(f"step {it:5d} loss {loss.item():.5f}  {time.time() - t0:.0f}s", flush=True)
     m.eval()
@@ -225,6 +236,7 @@ def evaluate(m, steps, quant=True):
                     if p_.dim() >= 2 and "tau" not in n_: p_.data = fn(p_.data)
             res_q = evaluate(mq, steps, quant=False)
             print(f"  {name:24s} {res_q:6.0f}")
+    if VAE >= 0: print(f"latent KL at the end of training: {m.kl.item():.2f} nats per latent tick (beta {VAE})"); return
     print("example latent frequencies (Hz) for walk_1:", np.round(f[0].detach().cpu().numpy(), 2))
 
 
