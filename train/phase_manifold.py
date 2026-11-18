@@ -227,6 +227,8 @@ def evaluate(m, steps, quant=True):
             P[i, START:] = r.codes(R).reshape(-1, 90)
         return P
     C = tc.reshape(8, 400, 90)
+    if os.environ.get("PAE_DUMP") and quant:
+        np.save(os.environ["PAE_DUMP"], predict()); print("dumped predicted codes (8 avatars, 400 ticks, 90 codes) to", os.environ["PAE_DUMP"])
     def dr6():
         P0 = np.zeros((8, 400, 90), np.int64)
         for i in range(8):
