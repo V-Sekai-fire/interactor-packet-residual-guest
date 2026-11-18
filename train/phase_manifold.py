@@ -28,13 +28,28 @@ def six(codes):  # (T,30,3) int codes -> (T,180) float: the first two columns of
     return r.mats(codes)[..., :, :2].reshape(len(codes), 30 * 6).astype(np.float32)
 
 
+QAT = os.environ.get("QAT", "0") == "1"
+
+
+class TLinear(nn.Linear):  # ternary weights in the forward pass, straight-through gradient to the float copy
+    def forward(self, x):
+        w = self.weight
+        return nn.functional.linear(x, w + (qternary(w) - w).detach() if QAT else w, self.bias)
+
+
+class TConv(nn.Conv1d):
+    def forward(self, x):
+        w = self.weight
+        return self._conv_forward(x, w + (qternary(w) - w).detach() if QAT else w, self.bias)
+
+
 class GDN2Enc(nn.Module):
     """Gated DeltaNet-2 (arXiv 2605.22791, clean-room from the equations) as the encoder: per tick, S^T_t = (S^T_{t-1} Dec_t) - ((S^T_{t-1} Dec_t)(b_t * k_t) - w_t * v_t) k_t^T with
     channel-wise decay, erase and write gates; o_t = S^T_t q_t; a per-tick linear reads the D latent values from o_t. (B, 180, W) -> (B, D, W)."""
     def __init__(self, H=2, dk=32, dv=32):
         super().__init__()
         self.H, self.dk, self.dv = H, dk, dv
-        self.q, self.k, self.v = nn.Linear(IND, H * dk), nn.Linear(IND, H * dk), nn.Linear(IND, H * dv)
+        self.q, self.k, self.v = TLinear(IND, H * dk), TLinear(IND, H * dk), TLinear(IND, H * dv)  # the gates a, b, w stay float
         self.a, self.b, self.w = nn.Linear(IND, H * dk), nn.Linear(IND, H * dk), nn.Linear(IND, H * dv)
         nn.init.constant_(self.a.bias, 2.0)
         self.out = nn.Linear(H * dv, D)
@@ -63,7 +78,7 @@ class PAE(nn.Module):
         super().__init__()
         self.enc = GDN2Enc() if ENC == "gdn2" else nn.Sequential(nn.Conv1d(IND, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, D, 5, padding=2))
         self.phase = nn.Linear(W, 2)
-        self.dec = nn.Sequential(nn.Conv1d(D, 96, 5, padding=2), nn.ELU(), nn.Conv1d(96, 180, 5, padding=2))
+        self.dec = nn.Sequential(TConv(D, 96, 5, padding=2), nn.ELU(), TConv(96, 180, 5, padding=2))
         k = torch.arange(1, W // 2 + 1).float(); t = torch.arange(W).float() * DT
         self.register_buffer("fk", k / (W * DT))
         self.register_buffer("C", torch.cos(2 * np.pi * self.fk[:, None] * t[None]))
